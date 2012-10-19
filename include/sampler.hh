@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 
 #include "rng.hh"
@@ -55,6 +56,10 @@ namespace smc
 template <class Space>
 class sampler
 {
+public:
+    /// A function to integrate
+    typedef std::function<double(const Space &, void *)> integrate_fn;
+
 private:
     ///A random number generator.
     rng* pRng;
@@ -114,7 +119,7 @@ public:
     ///Initialise the sampler and its constituent particles.
     void Initialise(void);
     ///Integrate the supplied function with respect to the current particle set.
-    double Integrate(double(*pIntegrand)(const Space &, void*), void* pAuxiliary);
+    double Integrate(integrate_fn pIntegrand, void* pAuxiliary);
     ///Integrate the supplied function over the path path using the supplied width function.
     double IntegratePathSampling(double(*pIntegrand)(long, const particle<Space>&, void*), double(*pWidth)(long, void*), void* pAuxiliary);
     ///Perform one iteration of the simulation algorithm.
@@ -262,7 +267,7 @@ void sampler<Space>::Initialise(void)
 /// \param pAuxiliary A pointer to any auxiliary data which should be passed to the function
 
 template <class Space>
-double sampler<Space>::Integrate(double(*pIntegrand)(const Space&, void*), void * pAuxiliary)
+double sampler<Space>::Integrate(integrate_fn pIntegrand, void * pAuxiliary)
 {
     long double rValue = 0;
     long double wSum = 0;
