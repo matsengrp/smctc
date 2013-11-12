@@ -28,8 +28,10 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <iostream>
+#include <iosfwd>
+#include <memory>
 #include <utility>
+#include <vector>
 
 #ifdef SMCTC_HAVE_BGL
 #include <boost/graph/adjacency_list.hpp>
@@ -64,7 +66,7 @@ class sampler
 {
 private:
     ///A random number generator.
-    rng* pRng;
+    std::unique_ptr<rng> pRng;
 
     ///Number of particles in the system.
     long N;
@@ -76,14 +78,14 @@ private:
     ///The effective sample size at which resampling should be used.
     double dResampleThreshold;
     ///Structure used internally for resampling.
-    double* dRSWeights;
+    std::vector<double> dRSWeights;
     ///Structure used internally for resampling.
-    unsigned int* uRSCount;
+    std::vector<unsigned int> uRSCount;
     ///Structure used internally for resampling.
-    unsigned int* uRSIndices;
+    std::vector<unsigned int> uRSIndices;
 
     ///The particles within the system.
-    particle<Space> *pParticles;
+    std::vector<particle<Space>> pParticles;
     ///The set of moves available.
     moveset<Space> Moves;
 
@@ -191,18 +193,18 @@ private:
 /// \param htHM The history mode to use: set this to SMC_HISTORY_RAM to store the whole history of the system and SMC_HISTORY_NONE to avoid doing so.
 /// \tparam Space The class used to represent a point in the sample space.
 template <class Space>
-sampler<Space>::sampler(long lSize, HistoryType htHM)
+sampler<Space>::sampler(long lSize, HistoryType htHM) :
+    pRng(new rng()),
+    N(lSize)
 {
-    pRng = new rng();
-    N = lSize;
-    pParticles = new particle<Space>[lSize];
+    pParticles.resize(lSize);
 
     //Allocate some storage for internal workspaces
-    dRSWeights = new double[N];
+    dRSWeights.resize(N);
     ///Structure used internally for resampling.
-    uRSCount  = new unsigned[N];
+    uRSCount.resize(N);
     ///Structure used internally for resampling.
-    uRSIndices = new unsigned[N];
+    uRSIndices.resize(N);
 
     //Some workable defaults.
     htHistoryMode = htHM;
@@ -220,18 +222,18 @@ sampler<Space>::sampler(long lSize, HistoryType htHM)
 /// \param rngSeed The seed to use for the random number generator
 /// \tparam Space The class used to represent a point in the sample space.
 template <class Space>
-sampler<Space>::sampler(long lSize, HistoryType htHM, const gsl_rng_type* rngType, unsigned long rngSeed)
+sampler<Space>::sampler(long lSize, HistoryType htHM, const gsl_rng_type* rngType, unsigned long rngSeed) :
+    pRng(new rng(rngType, rngSeed)),
+    N(lSize)
 {
-    pRng = new rng(rngType, rngSeed);
-    N = lSize;
-    pParticles = new particle<Space>[lSize];
+    pParticles.resize(lSize);
 
     //Allocate some storage for internal workspaces
-    dRSWeights = new double[N];
+    dRSWeights.resize(N);
     ///Structure used internally for resampling.
-    uRSCount  = new unsigned[N];
+    uRSCount.resize(N);
     ///Structure used internally for resampling.
-    uRSIndices = new unsigned[N];
+    uRSIndices.resize(N);
 
     //Some workable defaults.
     htHistoryMode  = SMC_HISTORY_RAM;
@@ -243,16 +245,6 @@ sampler<Space>::sampler(long lSize, HistoryType htHM, const gsl_rng_type* rngTyp
 template <class Space>
 sampler<Space>::~sampler()
 {
-    delete pRng;
-
-    if(pParticles)
-        delete [] pParticles;
-    if(dRSWeights)
-        delete [] dRSWeights;
-    if(uRSCount)
-        delete [] uRSCount;
-    if(uRSIndices)
-        delete [] uRSIndices;
 }
 
 template <class Space>
@@ -280,12 +272,12 @@ void sampler<Space>::Initialise(void)
     T = 0;
 
     for(int i = 0; i < N; i++)
-        pParticles[i] = Moves.DoInit(pRng);
+        pParticles[i] = Moves.DoInit(pRng.get());
 
     if(htHistoryMode != SMC_HISTORY_NONE) {
         while(History.Pop());
         nResampled = 0;
-        History.Push(N, pParticles, 0, historyflags(nResampled));
+        History.Push(N, pParticles.data(), 0, historyflags(nResampled));
     }
 
     return;
@@ -329,7 +321,7 @@ double sampler<Space>::IntegratePathSampling(double(*pIntegrand)(long, const par
     if(htHistoryMode == SMC_HISTORY_NONE)
         throw SMC_EXCEPTION(SMCX_MISSING_HISTORY, "The path sampling integral cannot be computed as the history of the system was not stored.");
 
-    History.Push(N, pParticles, nAccepted, historyflags(nResampled));
+    History.Push(N, pParticles.data(), nAccepted, historyflags(nResampled));
     double dRes = History.IntegratePathSampling(pIntegrand, pWidth, pAuxiliary);
     History.Pop();
     return dRes;
@@ -364,7 +356,7 @@ double sampler<Space>::IterateEss(void)
 {
     //Initially, the current particle set should be appended to the historical process.
     if(htHistoryMode != SMC_HISTORY_NONE)
-        History.Push(N, pParticles, nAccepted, historyflags(nResampled));
+        History.Push(N, pParticles.data(), nAccepted, historyflags(nResampled));
 
     nAccepted = 0;
 
@@ -393,7 +385,7 @@ double sampler<Space>::IterateEss(void)
     }
     //A possible MCMC step should be included here.
     for(int i = 0; i < N; i++) {
-        if(Moves.DoMCMC(T + 1, pParticles[i], pRng))
+        if(Moves.DoMCMC(T + 1, pParticles[i], pRng.get()))
             nAccepted++;
     }
     // Increment the evolution time.
@@ -413,7 +405,7 @@ template <class Space>
 void sampler<Space>::MoveParticles(void)
 {
     for(int i = 0; i < N; i++) {
-        Moves.DoMove(T + 1, pParticles[i], pRng);
+        Moves.DoMove(T + 1, pParticles[i], pRng.get());
         //  pParticles[i].Set(pNew.value, pNew.logweight);
     }
 }
@@ -436,7 +428,7 @@ void sampler<Space>::Resample(ResampleType lMode)
         for(int i = 0; i < N; ++i)
             dRSWeights[i] = pParticles[i].GetWeight();
         //Generate a multinomial random vector with parameters (N,dRSWeights[1:N]) and store it in uRSCount
-        pRng->Multinomial(N, N, dRSWeights, uRSCount);
+        pRng->Multinomial(N, N, dRSWeights.data(), uRSCount.data());
         break;
 
     case SMC_RESAMPLE_RESIDUAL:
@@ -456,7 +448,7 @@ void sampler<Space>::Resample(ResampleType lMode)
             uMultinomialCount -= uRSIndices[i];
         }
         //Generate a multinomial random vector with parameters (uMultinomialCount,dRSWeights[1:N]) and store it in uRSCount
-        pRng->Multinomial(uMultinomialCount, N, dRSWeights, uRSCount);
+        pRng->Multinomial(uMultinomialCount, N, dRSWeights.data(), uRSCount.data());
         for(int i = 0; i < N; ++i)
             uRSCount[i] += uRSIndices[i];
         break;
