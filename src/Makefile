@@ -1,5 +1,6 @@
 include ../Makefile.in
 
+CXXFLAGS += -I ../include
 SMCC = rng.cc history.cc smc-exception.cc
 SMCO = rng.o history.o smc-exception.o
 
@@ -12,8 +13,7 @@ clean:
 	-rm *.a
 	-rm *~
 
-libsmctc.a: $(SMCC) Makefile
-	$(CXX) $(CXXFLAGS) -c -I../include $(SMCC)
+libsmctc.a: $(SMCO) Makefile
 	ar rcs libsmctc.a $(SMCO)
 	mkdir -p ../lib
 	cp libsmctc.a ../lib
