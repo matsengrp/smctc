@@ -531,7 +531,7 @@ void sampler<Space>::Resample(ResampleType lMode)
     }
 
 #ifdef SMCTC_HAVE_BGL
-    UpdateParticleGraph(uRSIndices);
+    UpdateParticleGraph(uRSIndices.data());
 #endif
 
     //Perform the replication of the chosen.
