@@ -49,7 +49,8 @@
 enum ResampleType { SMC_RESAMPLE_MULTINOMIAL = 0,
                     SMC_RESAMPLE_RESIDUAL,
                     SMC_RESAMPLE_STRATIFIED,
-                    SMC_RESAMPLE_SYSTEMATIC
+                    SMC_RESAMPLE_SYSTEMATIC,
+                    SMC_RESAMPLE_FRIBBLEBITS
                   };
 
 ///Storage types for the history of the particle system.
@@ -151,6 +152,11 @@ public:
     void MoveParticles(void);
     ///Resample the particle set using the specified resmpling scheme.
     void Resample(ResampleType lMode);
+
+    const std::vector<unsigned int> SampleMultinomial(long M) const;
+
+    ///Resample the particle set using fribblebits resampling.
+    void ResampleFribble(double dEss);
     ///Sets the entire moveset to the one which is supplied
     void SetMoveSet(moveset<Space>& pNewMoveset) { Moves = pNewMoveset; }
     ///Set Resampling Parameters
@@ -253,10 +259,10 @@ double sampler<Space>::GetESS(void) const
     long double sum = 0;
     long double sumsq = 0;
 
-    for(int i = 0; i < N; i++)
+    for(int i = 0; i < pParticles.size(); i++)
         sum += expl(pParticles[i].GetLogWeight());
 
-    for(int i = 0; i < N; i++)
+    for(int i = 0; i < pParticles.size(); i++)
         sumsq += expl(2.0 * (pParticles[i].GetLogWeight()));
 
     return expl(-log(sumsq) + 2 * log(sum));
@@ -352,6 +358,85 @@ void sampler<Space>::IterateBack(void)
 }
 
 template <class Space>
+const std::vector<unsigned int> sampler<Space>::SampleMultinomial(long M) const
+{
+    // Collect the weights of the particles.
+    std::vector<double> dWeights(pParticles.size());
+    std::transform(pParticles.begin(), pParticles.end(),
+                   dWeights.begin(),
+                   [](const particle<Space>& p) { return p.GetWeight(); });
+
+    // Generate a vector of sample counts.
+    std::vector<unsigned int> uCount(pParticles.size());
+    pRng->Multinomial(M, pParticles.size(), dWeights.data(), uCount.data());
+
+    // Transform the vector of sample counts into a vector of parent indices.
+    std::vector<unsigned int> uIndices(M);
+    for (size_t i = 0, j = 0; i < uCount.size(); ++i) {
+        while (uCount[i] > 0) {
+            uIndices[j++] = i;
+            --uCount[i];
+        }
+    }
+
+    return uIndices;
+}
+
+template <class Space>
+void sampler<Space>::ResampleFribble(double dESS)
+{
+    assert(pParticles.size() == N);
+
+    //
+    // Generate new samples until ESS reaches the threshold.
+    //
+
+    std::clog << "[ResampleFribble] starting ESS = " << dESS << '\n';
+
+    while (dESS < dResampleThreshold) {
+        long M = N;
+
+        // Select M parents from the current population.
+        auto uIndices = SampleMultinomial(M);
+
+        // Generate M new particles by perturbation of the selected parents.
+        pParticles.reserve(pParticles.size() + M);
+        for (size_t i = 0; i < uIndices.size(); ++i) {
+            const auto& parent = pParticles[uIndices[i]];
+            pParticles.emplace_back(parent.GetValue(), parent.GetLogWeight());
+            Moves.DoMove(T + 1, pParticles.back(), pRng.get());
+        }
+
+        dESS = GetESS();
+
+        std::clog << "[ResampleFribble] generated " << M << " new particles\n";
+        std::clog << "[ResampleFribble] new ESS = " << dESS << '\n';
+    }
+
+    //
+    // Resample the population back down to N particles.
+    //
+
+    std::clog << "[ResampleFribble] downsampling from " << pParticles.size() << " to " << N << " particles\n";
+
+    auto uIndices = SampleMultinomial(N);
+    decltype(pParticles) pNewParticles(N);
+
+    // Replicate the chosen particles.
+    for (size_t i = 0; i < uIndices.size() ; ++i) {
+        const auto& parent = pParticles[uIndices[i]];
+        auto& child = pNewParticles[i];
+        child.SetValue(parent.GetValue());
+
+        // After resampling, all particle weights should be zero.
+        child.SetLogWeight(0.0);
+    }
+
+    std::swap(pParticles, pNewParticles);
+    assert(pParticles.size() == N);
+}
+
+template <class Space>
 double sampler<Space>::IterateEss(void)
 {
     //Initially, the current particle set should be appended to the historical process.
@@ -376,7 +461,11 @@ double sampler<Space>::IterateEss(void)
     double ESS = GetESS();
     if(ESS < dResampleThreshold) {
         nResampled = 1;
-        Resample(rtResampleMode);
+        if (rtResampleMode == SMC_RESAMPLE_FRIBBLEBITS) {
+            ResampleFribble(ESS);
+        } else {
+            Resample(rtResampleMode);
+        }
     } else {
 #ifdef SMCTC_HAVE_BGL
         UpdateParticleGraph(nullptr);
