@@ -404,7 +404,7 @@ void sampler<Space>::ResampleFribble(double dESS)
         for (size_t i = 0; i < uIndices.size(); ++i) {
             const auto& parent = pParticles[uIndices[i]];
             pParticles.emplace_back(parent.GetValue(), parent.GetLogWeight());
-            Moves.DoMove(T + 1, pParticles.back(), pRng.get());
+            Moves.DoMCMC(T + 1, pParticles.back(), pRng.get());
         }
 
         dESS = GetESS();
@@ -472,11 +472,15 @@ double sampler<Space>::IterateEss(void)
 #endif
         nResampled = 0;
     }
-    //A possible MCMC step should be included here.
-    for(int i = 0; i < N; i++) {
-        if(Moves.DoMCMC(T + 1, pParticles[i], pRng.get()))
-            nAccepted++;
+
+    if (rtResampleMode != SMC_RESAMPLE_FRIBBLEBITS) {
+        //A possible MCMC step should be included here.
+        for(int i = 0; i < N; i++) {
+            if(Moves.DoMCMC(T + 1, pParticles[i], pRng.get()))
+                nAccepted++;
+        }
     }
+
     // Increment the evolution time.
     T++;
 
