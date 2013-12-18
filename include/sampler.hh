@@ -364,9 +364,9 @@ const std::vector<unsigned int> sampler<Space>::SampleMultinomial(long M) const
 {
     // Collect the weights of the particles.
     std::vector<double> dWeights(pParticles.size());
-    std::transform(pParticles.begin(), pParticles.end(),
-                   dWeights.begin(),
-                   [](const particle<Space>& p) { return p.GetWeight(); });
+    for (size_t i = 0; i < pParticles.size(); ++i) {
+        dWeights[i] = pParticles[i].GetWeight();
+    }
 
     // Generate a vector of sample counts.
     std::vector<unsigned int> uCount(pParticles.size());
@@ -474,17 +474,14 @@ void sampler<Space>::ResampleFribble(double dESS)
 
     std::clog << "[ResampleFribble] downsampling from " << pParticles.size() << " to " << N << " particles\n";
 
-    auto uIndices = SampleMultinomial(N);
-    decltype(pParticles) pNewParticles(N);
+    auto uIndices = SampleStratified(N);
+    decltype(pParticles) pNewParticles;
+    pNewParticles.reserve(N);
 
     // Replicate the chosen particles.
     for (size_t i = 0; i < uIndices.size() ; ++i) {
         const auto& parent = pParticles[uIndices[i]];
-        auto& child = pNewParticles[i];
-        child.SetValue(parent.GetValue());
-
-        // After resampling, all particle weights should be zero.
-        child.SetLogWeight(0.0);
+        pNewParticles.emplace_back(parent.GetValue(), 0.0);
     }
 
     pParticles = pNewParticles;
