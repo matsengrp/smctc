@@ -154,6 +154,8 @@ public:
     void Resample(ResampleType lMode);
 
     const std::vector<unsigned int> SampleMultinomial(long M) const;
+    const std::vector<unsigned int> SampleSystematic(long M, bool bStratified=false) const;
+    const std::vector<unsigned int> SampleStratified(long M) const;
 
     ///Resample the particle set using fribblebits resampling.
     void ResampleFribble(double dEss);
@@ -380,6 +382,59 @@ const std::vector<unsigned int> sampler<Space>::SampleMultinomial(long M) const
     }
 
     return uIndices;
+}
+
+template <class Space>
+const std::vector<unsigned int> sampler<Space>::SampleSystematic(long M, bool bStratified) const
+{
+    // Procedure for stratified sampling
+    // See Appendix of Kitagawa 1996, http://www.jstor.org/stable/1390750,
+    // or p.290 of the Doucet et al book, an image of which is at:
+    // http://cl.ly/image/200T0y473k1d/stratified_resampling.jpg
+
+    // Calculate the normalising constant of the weight vector
+    double dWeightSum = 0.0;
+    for (size_t i = 0; i < pParticles.size(); ++i)
+        dWeightSum += exp(pParticles[i].GetLogWeight());
+
+    // dWeightCumulative is \tilde{\pi}^r from the Doucet book.
+    double dWeightCumulative = 0.0;
+    //Generate a uniform random number between 0 and 1/M.
+    double dRand = pRng->Uniform(0, 1.0 / M);
+
+    std::vector<unsigned int> uCount(pParticles.size(), 0);
+
+    for (size_t i = 0, j = 0; i < pParticles.size() && j < M; ++i) {
+        dWeightCumulative += exp(pParticles[i].GetLogWeight()) / dWeightSum;
+        if (dWeightCumulative > ((static_cast<double>(j) / M) + dRand)) {
+            ++uCount[i];
+            ++j;
+
+            // The only difference between stratified and systematic resampling
+            // is whether a new random variable is drawn for each partition of
+            // the (0, 1] interval.
+            if (bStratified) {
+                dRand = pRng->Uniform(0, 1.0 / M);
+            }
+        }
+    }
+
+    // Transform the vector of sample counts into a vector of parent indices.
+    std::vector<unsigned int> uIndices(M);
+    for (size_t i = 0, j = 0; i < uCount.size(); ++i) {
+        while (uCount[i] > 0) {
+            uIndices[j++] = i;
+            --uCount[i];
+        }
+    }
+
+    return uIndices;
+}
+
+template <class Space>
+const std::vector<unsigned int> sampler<Space>::SampleStratified(long M) const
+{
+    return SampleSystematic(M, true);
 }
 
 template <class Space>
