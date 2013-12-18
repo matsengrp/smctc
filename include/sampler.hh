@@ -452,7 +452,7 @@ void sampler<Space>::ResampleFribble(double dESS)
         long M = static_cast<long>(std::ceil(dResampleThreshold - dESS));
 
         // Select M parents from the current population.
-        auto uIndices = SampleMultinomial(M);
+        auto uIndices = SampleStratified(M);
 
         // Generate M new particles by perturbation of the selected parents.
         pParticles.reserve(pParticles.size() + M);
