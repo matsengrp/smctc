@@ -406,7 +406,7 @@ const std::vector<unsigned int> sampler<Space>::SampleSystematic(long M, bool bS
 
     for (size_t i = 0, j = 0; i < pParticles.size() && j < M; ++i) {
         dWeightCumulative += exp(pParticles[i].GetLogWeight()) / dWeightSum;
-        if (dWeightCumulative > ((static_cast<double>(j) / M) + dRand)) {
+        while (dWeightCumulative > ((static_cast<double>(j) / M) + dRand) && j < M) {
             ++uCount[i];
             ++j;
 
