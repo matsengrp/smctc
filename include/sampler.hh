@@ -525,12 +525,10 @@ double sampler<Space>::IterateEss(void)
         nResampled = 0;
     }
 
-    if (rtResampleMode != SMC_RESAMPLE_FRIBBLEBITS) {
-        //A possible MCMC step should be included here.
-        for(int i = 0; i < N; i++) {
-            if(Moves.DoMCMC(T + 1, pParticles[i], pRng.get()))
-                nAccepted++;
-        }
+    //A possible MCMC step should be included here.
+    for(int i = 0; i < N; i++) {
+        if(Moves.DoMCMC(T + 1, pParticles[i], pRng.get()))
+            nAccepted++;
     }
 
     // Increment the evolution time.
