@@ -449,7 +449,8 @@ void sampler<Space>::ResampleFribble(double dESS)
     std::clog << "[ResampleFribble] starting ESS = " << dESS << '\n';
 
     while (dESS < dResampleThreshold) {
-        long M = static_cast<long>(std::ceil(dResampleThreshold - dESS));
+        //long M = static_cast<long>(std::ceil(dResampleThreshold - dESS));
+        long M = N;
 
         // Select M parents from the current population.
         auto uIndices = SampleStratified(M);
