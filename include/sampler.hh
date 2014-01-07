@@ -146,6 +146,9 @@ public:
     void IterateBack(void);
     ///Perform one iteration of the simulation algorithm and return the resulting ess
     double IterateEss(void);
+
+    double IterateEssVariable(void);
+
     ///Perform iterations until the specified evolution time is reached
     void IterateUntil(long lTerminate);
     ///Move the particle set by proposing an applying an appropriate move to each particle.
@@ -453,7 +456,7 @@ void sampler<Space>::ResampleFribble(double dESS)
         long M = N;
 
         // Select M parents from the current population.
-        auto uIndices = SampleStratified(M);
+        const auto uIndices = SampleStratified(M);
 
         // Generate M new particles by perturbation of the selected parents.
         pParticles.reserve(pParticles.size() + M);
@@ -475,7 +478,7 @@ void sampler<Space>::ResampleFribble(double dESS)
 
     std::clog << "[ResampleFribble] downsampling from " << pParticles.size() << " to " << N << " particles\n";
 
-    auto uIndices = SampleStratified(N);
+    const auto uIndices = SampleStratified(N);
     decltype(pParticles) pNewParticles;
     pNewParticles.reserve(N);
 
@@ -487,6 +490,76 @@ void sampler<Space>::ResampleFribble(double dESS)
 
     pParticles = pNewParticles;
     assert(pParticles.size() == N);
+}
+
+template <class Space>
+double sampler<Space>::IterateEssVariable()
+{
+    assert(pParticles.size() == N);
+
+    // Append the current population to the history, if requested.
+    if (htHistoryMode != SMC_HISTORY_NONE)
+        History.Push(N, pParticles.data(), nAccepted, historyflags(nResampled));
+
+    // Stash copies of the original particles; we'll need them to generate new ones.
+    const auto pStartingParticles = pParticles;
+    pParticles.clear();
+
+    double dESS = 0.0;
+
+    do {
+        // Generate new particles from the originals via SMC moves.
+        auto pNewParticles = pStartingParticles;
+        for (auto& p : pNewParticles) {
+            Moves.DoMove(T + 1, p, pRng.get());
+        }
+
+        // Normalize the weights.
+        double dMaxWeight = -std::numeric_limits<double>::infinity();
+        for (const auto& p : pNewParticles)
+            dMaxWeight = std::max(dMaxWeight, p.GetLogWeight());
+        for (auto& p : pNewParticles)
+            p.SetLogWeight(p.GetLogWeight() - dMaxWeight);
+
+        // Add the newly-generated particles to the population.
+        pParticles.insert(pParticles.end(), pNewParticles.begin(), pNewParticles.end());
+
+        dESS = GetESS();
+        std::clog << "[IterateEssVariable] ESS = " << dESS << ", N = " << pParticles.size() << '\n';
+    } while (dESS < dResampleThreshold);
+
+    //
+    // Resample the population back down to N particles.
+    //
+
+    std::clog << "[IterateEssVariable] downsampling from " << pParticles.size() << " to " << N << " particles\n";
+
+    auto uIndices = SampleStratified(N);
+    decltype(pParticles) pSampledParticles;
+    pSampledParticles.reserve(N);
+
+    // Replicate the chosen particles.
+    for (size_t i = 0; i < uIndices.size() ; ++i) {
+        const auto& parent = pParticles[uIndices[i]];
+        pSampledParticles.emplace_back(parent.GetValue(), 0.0);
+    }
+
+    pParticles = pSampledParticles;
+
+    //
+    // (Optional) MCMC moves.
+    //
+
+    nAccepted = 0;
+
+    for (auto& p : pParticles) {
+        if (Moves.DoMCMC(T + 1, p, pRng.get()))
+            ++nAccepted;
+    }
+
+    assert(pParticles.size() == N);
+
+    return dESS;
 }
 
 template <class Space>
