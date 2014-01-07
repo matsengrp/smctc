@@ -557,8 +557,9 @@ double sampler<Space>::IterateEssVariable()
             ++nAccepted;
     }
 
-    assert(pParticles.size() == N);
+    ++T;
 
+    assert(pParticles.size() == N);
     return dESS;
 }
 
