@@ -506,6 +506,7 @@ double sampler<Space>::IterateEssVariable()
     pParticles.clear();
 
     double dESS = 0.0;
+    double dGlobalMaxWeight = -std::numeric_limits<double>::infinity();
 
     do {
         // Generate new particles from the originals via SMC moves.
@@ -515,11 +516,28 @@ double sampler<Space>::IterateEssVariable()
         }
 
         // Normalize the weights.
-        double dMaxWeight = -std::numeric_limits<double>::infinity();
+        double dLocalMaxWeight = -std::numeric_limits<double>::infinity();
         for (const auto& p : pNewParticles)
-            dMaxWeight = std::max(dMaxWeight, p.GetLogWeight());
-        for (auto& p : pNewParticles)
-            p.SetLogWeight(p.GetLogWeight() - dMaxWeight);
+            dLocalMaxWeight = std::max(dLocalMaxWeight, p.GetLogWeight());
+
+        //
+        // TODO: Clean up this spaghetti.
+        //
+
+        if (pParticles.empty())
+            dGlobalMaxWeight = dLocalMaxWeight;
+
+        if (dLocalMaxWeight > dGlobalMaxWeight) {
+            for (auto& p : pParticles)
+                p.AddToLogWeight(dGlobalMaxWeight - dLocalMaxWeight);
+            for (auto& p : pNewParticles)
+                p.AddToLogWeight(-dLocalMaxWeight);
+
+            dGlobalMaxWeight = dLocalMaxWeight;
+        } else {
+            for (auto& p : pNewParticles)
+                p.AddToLogWeight(-dGlobalMaxWeight);
+        }
 
         // Add the newly-generated particles to the population.
         pParticles.insert(pParticles.end(), pNewParticles.begin(), pNewParticles.end());
@@ -532,19 +550,23 @@ double sampler<Space>::IterateEssVariable()
     // Resample the population back down to N particles.
     //
 
-    std::clog << "[IterateEssVariable] downsampling from " << pParticles.size() << " to " << N << " particles\n";
+    if (pParticles.size() > N) {
+        nResampled = 1;
 
-    auto uIndices = SampleStratified(N);
-    decltype(pParticles) pSampledParticles;
-    pSampledParticles.reserve(N);
+        std::clog << "[IterateEssVariable] downsampling from " << pParticles.size() << " to " << N << " particles\n";
 
-    // Replicate the chosen particles.
-    for (size_t i = 0; i < uIndices.size() ; ++i) {
-        const auto& parent = pParticles[uIndices[i]];
-        pSampledParticles.emplace_back(parent.GetValue(), 0.0);
+        auto uIndices = SampleStratified(N);
+        decltype(pParticles) pSampledParticles;
+        pSampledParticles.reserve(N);
+
+        // Replicate the chosen particles.
+        for (size_t i = 0; i < uIndices.size() ; ++i) {
+            const auto& parent = pParticles[uIndices[i]];
+            pSampledParticles.emplace_back(parent.GetValue(), 0.0);
+        }
+
+        pParticles = pSampledParticles;
     }
-
-    pParticles = pSampledParticles;
 
     //
     // (Optional) MCMC moves.
