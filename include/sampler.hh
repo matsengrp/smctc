@@ -147,7 +147,7 @@ public:
     ///Perform one iteration of the simulation algorithm and return the resulting ess
     double IterateEss(void);
 
-    double IterateEssVariable(void);
+    double IterateEssVariable(unsigned int* puMaxPopulation=nullptr);
 
     ///Perform iterations until the specified evolution time is reached
     void IterateUntil(long lTerminate);
@@ -493,7 +493,7 @@ void sampler<Space>::ResampleFribble(double dESS)
 }
 
 template <class Space>
-double sampler<Space>::IterateEssVariable()
+double sampler<Space>::IterateEssVariable(unsigned int* puMaxPopulation)
 {
     assert(pParticles.size() == N);
 
@@ -545,6 +545,10 @@ double sampler<Space>::IterateEssVariable()
         dESS = GetESS();
         std::clog << "[IterateEssVariable] ESS = " << dESS << ", N = " << pParticles.size() << '\n';
     } while (dESS < dResampleThreshold);
+
+    if (puMaxPopulation) {
+        *puMaxPopulation = pParticles.size();
+    }
 
     //
     // Resample the population back down to N particles.
