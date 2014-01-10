@@ -61,6 +61,16 @@ enum HistoryType { SMC_HISTORY_NONE = 0,
 namespace smc
 {
 
+struct DatabaseHistory {
+    std::vector<double> ess;
+    std::vector<std::vector<double>> particle_weights;
+
+    void clear() {
+        ess.clear();
+        particle_weights.clear();
+    }
+};
+
 /// A template class for an interacting particle system suitable for SMC sampling
 template <class Space>
 class sampler
@@ -147,7 +157,7 @@ public:
     ///Perform one iteration of the simulation algorithm and return the resulting ess
     double IterateEss(void);
 
-    double IterateEssVariable(unsigned int* puMaxPopulation=nullptr);
+    double IterateEssVariable(DatabaseHistory* database_history=nullptr);
 
     ///Perform iterations until the specified evolution time is reached
     void IterateUntil(long lTerminate);
@@ -493,7 +503,7 @@ void sampler<Space>::ResampleFribble(double dESS)
 }
 
 template <class Space>
-double sampler<Space>::IterateEssVariable(unsigned int* puMaxPopulation)
+double sampler<Space>::IterateEssVariable(DatabaseHistory* database_history)
 {
     assert(pParticles.size() == N);
 
@@ -507,6 +517,9 @@ double sampler<Space>::IterateEssVariable(unsigned int* puMaxPopulation)
 
     double dESS = 0.0;
     double dGlobalMaxWeight = -std::numeric_limits<double>::infinity();
+
+    if (database_history)
+        database_history->clear();
 
     do {
         // Generate new particles from the originals via SMC moves.
@@ -544,11 +557,16 @@ double sampler<Space>::IterateEssVariable(unsigned int* puMaxPopulation)
 
         dESS = GetESS();
         std::clog << "[IterateEssVariable] ESS = " << dESS << ", N = " << pParticles.size() << '\n';
-    } while (dESS < dResampleThreshold);
 
-    if (puMaxPopulation) {
-        *puMaxPopulation = pParticles.size();
-    }
+        if (database_history) {
+            database_history->ess.push_back(dESS);
+            std::vector<double> current_weights;
+            current_weights.reserve(pParticles.size());
+            for (const auto& p : pParticles)
+                current_weights.push_back(p.GetLogWeight());
+            database_history->particle_weights.push_back(current_weights);
+        }
+    } while (dESS < dResampleThreshold && pParticles.size() < 100000);
 
     //
     // Resample the population back down to N particles.
