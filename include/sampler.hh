@@ -63,11 +63,9 @@ namespace smc
 
 struct DatabaseHistory {
     std::vector<double> ess;
-    std::vector<std::vector<double>> particle_weights;
 
     void clear() {
         ess.clear();
-        particle_weights.clear();
     }
 };
 
@@ -560,11 +558,6 @@ double sampler<Space>::IterateEssVariable(DatabaseHistory* database_history)
 
         if (database_history) {
             database_history->ess.push_back(dESS);
-            std::vector<double> current_weights;
-            current_weights.reserve(pParticles.size());
-            for (const auto& p : pParticles)
-                current_weights.push_back(p.GetLogWeight());
-            database_history->particle_weights.push_back(current_weights);
         }
     } while (dESS < dResampleThreshold && pParticles.size() < 100000);
 
