@@ -45,6 +45,10 @@
 #include "particle.hh"
 #include "smc-exception.hh"
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 ///Specifiers for various resampling algorithms:
 enum ResampleType { SMC_RESAMPLE_MULTINOMIAL = 0,
                     SMC_RESAMPLE_RESIDUAL,
@@ -107,6 +111,9 @@ private:
     HistoryType htHistoryMode;
     ///The historical process associated with the particle system.
     history<particle<Space> > History;
+#if defined(_OPENMP)
+	std::size_t nThreads;
+#endif
 
 #ifdef SMCTC_HAVE_BGL
     /// A vertex in the particle history graph:
@@ -186,6 +193,13 @@ public:
     std::ostream & StreamParticleGraph(std::ostream & os) const;
 #endif
 
+	/// \brief Set the number of threads
+	/// \param nThreads Number of threads
+#if defined(_OPENMP)
+	void SetNumberOfThreads(const size_t n)
+	{ this->nThreads = n; };
+#endif
+
 private:
     ///Duplication of smc::sampler is not currently permitted.
     sampler(const sampler<Space> & sFrom);
@@ -229,6 +243,9 @@ sampler<Space>::sampler(long lSize, HistoryType htHM) :
     htHistoryMode = htHM;
     rtResampleMode = SMC_RESAMPLE_STRATIFIED;
     dResampleThreshold = 0.5 * N;
+#if defined(_OPENMP)
+	nThreads = 1;
+#endif
 }
 
 /// The constructor prepares a sampler for use but does not assign any moves to the moveset, initialise the particles
@@ -258,6 +275,9 @@ sampler<Space>::sampler(long lSize, HistoryType htHM, const gsl_rng_type* rngTyp
     htHistoryMode  = SMC_HISTORY_RAM;
     rtResampleMode = SMC_RESAMPLE_STRATIFIED;
     dResampleThreshold = 0.5 * N;
+#if defined(_OPENMP)
+	nThreads = 1;
+#endif
 }
 
 
@@ -522,8 +542,9 @@ double sampler<Space>::IterateEssVariable(DatabaseHistory* database_history)
     do {
         // Generate new particles from the originals via SMC moves.
         auto pNewParticles = pStartingParticles;
-        for (auto& p : pNewParticles) {
-            Moves.DoMove(T + 1, p, pRng.get());
+		#pragma omp parallel for num_threads(nThreads)
+		for(int i = 0; i < N; i++) {
+            Moves.DoMove(T + 1, pNewParticles[i], pRng.get());
         }
 
         // Normalize the weights.
@@ -587,13 +608,13 @@ double sampler<Space>::IterateEssVariable(DatabaseHistory* database_history)
     // (Optional) MCMC moves.
     //
 
-    nAccepted = 0;
-
-    for (auto& p : pParticles) {
-        if (Moves.DoMCMC(T + 1, p, pRng.get()))
-            ++nAccepted;
+    double nAcceptedLocal = 0;
+	#pragma omp parallel for reduction(+:nAcceptedLocal) num_threads(nThreads)
+	for(int i = 0; i < N; i++) {
+		if(Moves.DoMCMC(T + 1, pParticles[i], pRng.get()))
+            ++nAcceptedLocal;
     }
-
+	nAccepted = nAcceptedLocal;
     ++T;
 
     assert(pParticles.size() == N);
@@ -638,11 +659,14 @@ double sampler<Space>::IterateEss(void)
     }
 
     if (rtResampleMode != SMC_RESAMPLE_FRIBBLEBITS) {
+		double nAcceptedLocal = nAccepted;
         //A possible MCMC step should be included here.
+		#pragma omp parallel for reduction(+:nAcceptedLocal) num_threads(nThreads)
         for(int i = 0; i < N; i++) {
             if(Moves.DoMCMC(T + 1, pParticles[i], pRng.get()))
-                nAccepted++;
+                nAcceptedLocal++;
         }
+		nAccepted = nAcceptedLocal;
     }
 
     // Increment the evolution time.
@@ -661,6 +685,7 @@ void sampler<Space>::IterateUntil(long lTerminate)
 template <class Space>
 void sampler<Space>::MoveParticles(void)
 {
+	#pragma omp parallel for num_threads(nThreads)
     for(int i = 0; i < N; i++) {
         Moves.DoMove(T + 1, pParticles[i], pRng.get());
         //  pParticles[i].Set(pNew.value, pNew.logweight);
