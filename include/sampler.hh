@@ -234,7 +234,7 @@ sampler<Space>::sampler(long lSize, HistoryType htHM, const gsl_rng_type* rngTyp
     uRSIndices = new unsigned[N];
 
     //Some workable defaults.
-    htHistoryMode  = SMC_HISTORY_RAM;
+    htHistoryMode  = htHM;
     rtResampleMode = SMC_RESAMPLE_STRATIFIED;
     dResampleThreshold = 0.5 * N;
 }
