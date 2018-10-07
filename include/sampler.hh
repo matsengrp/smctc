@@ -62,6 +62,10 @@ enum HistoryType { SMC_HISTORY_NONE = 0,
                    SMC_HISTORY_RAM
                  };
 
+enum TransformationType { SMC_TRANSFORMATION_NONE = 0,
+                          SMC_TRANSFORMATION_TRUNCATED
+                        };
+
 namespace smc
 {
 
@@ -127,6 +131,7 @@ private:
 
     Graph g;
 #endif
+    TransformationType transformation;
 
 public:
     ///Create an particle system containing lSize uninitialised particles with the specified mode.
@@ -199,6 +204,8 @@ public:
 	void SetNumberOfThreads(const size_t n)
 	{ this->nThreads = n; };
 #endif
+    TransformationType GetTransformationType(){ return transformation; }
+    void SetTransformationType(TransformationType type){ transformation = type; }
 
 private:
     ///Duplication of smc::sampler is not currently permitted.
@@ -246,6 +253,7 @@ sampler<Space>::sampler(long lSize, HistoryType htHM) :
 #if defined(_OPENMP)
 	nThreads = 1;
 #endif
+    transformation = SMC_TRANSFORMATION_NONE;
 }
 
 /// The constructor prepares a sampler for use but does not assign any moves to the moveset, initialise the particles
@@ -278,6 +286,7 @@ sampler<Space>::sampler(long lSize, HistoryType htHM, const gsl_rng_type* rngTyp
 #if defined(_OPENMP)
 	nThreads = 1;
 #endif
+    transformation = SMC_TRANSFORMATION_NONE;
 }
 
 
@@ -633,6 +642,26 @@ double sampler<Space>::IterateEss(void)
     //Move the particle set.
     MoveParticles();
 
+    switch(transformation){
+		case SMC_TRANSFORMATION_NONE:
+			break;
+		case SMC_TRANSFORMATION_TRUNCATED:{
+			// Truncated importance sampling Ionides 2008
+			double mean = 0;
+			std::vector<double> weights(N);
+			for(int i = 0; i < N; i++){
+				weights[i] = exp(pParticles[i].GetLogWeight());
+				mean += weights[i];
+			}
+			mean /= N;
+			double threshold = sqrt(N)*mean;
+			for(int i = 0; i < N; i++){
+				pParticles[i].SetLogWeight(log(std::min(threshold, weights[i])));
+			}
+			break;
+		}
+	}
+    
     //Normalise the weights to sensible values....
     double dMaxWeight = -std::numeric_limits<double>::infinity();
     for(int i = 0; i < N; i++)
