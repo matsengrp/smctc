@@ -4,7 +4,7 @@ C = main.cc simfunctions.cc
 O = main.o simfunctions.o
 H = simfunctions.hh
 
-CCFLAGS := $(CCFLAGS) -I../../include -L../../lib
+CXXFLAGS += -I../../include -L../../lib
 LFLAGS := -g -I../../include -L../../lib -static $(LFLAGS)
 
 
@@ -18,8 +18,8 @@ clean:
 	-rm rare
 
 rare: $(C) $(H)
-	$(CC) $(CCFLAGS) -c $(C)
-	$(CC) $(O) -lsmctc $(LFLAGS) -orare
+	$(CXX) $(CXXFLAGS) -c $(C)
+	$(CXX) $(O) -lsmctc $(LFLAGS) -orare
 	cp rare ../../bin
 
 

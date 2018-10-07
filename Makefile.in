@@ -1,4 +1,3 @@
-CCFLAGS = -O3 -std=c++0x
-CC = g++
+CXXFLAGS = -O3 -std=c++0x
 CBLAS = gslcblas
-LFLAGS = -lgsl -l$(CBLAS) 
+LDLIBS = -lgsl -l$(CBLAS)

@@ -28,8 +28,10 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <iostream>
+#include <iosfwd>
+#include <memory>
 #include <utility>
+#include <vector>
 
 #ifdef SMCTC_HAVE_BGL
 #include <boost/graph/adjacency_list.hpp>
@@ -43,11 +45,16 @@
 #include "particle.hh"
 #include "smc-exception.hh"
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 ///Specifiers for various resampling algorithms:
 enum ResampleType { SMC_RESAMPLE_MULTINOMIAL = 0,
                     SMC_RESAMPLE_RESIDUAL,
                     SMC_RESAMPLE_STRATIFIED,
-                    SMC_RESAMPLE_SYSTEMATIC
+                    SMC_RESAMPLE_SYSTEMATIC,
+                    SMC_RESAMPLE_FRIBBLEBITS
                   };
 
 ///Storage types for the history of the particle system.
@@ -58,13 +65,21 @@ enum HistoryType { SMC_HISTORY_NONE = 0,
 namespace smc
 {
 
+struct DatabaseHistory {
+    std::vector<double> ess;
+
+    void clear() {
+        ess.clear();
+    }
+};
+
 /// A template class for an interacting particle system suitable for SMC sampling
 template <class Space>
 class sampler
 {
 private:
     ///A random number generator.
-    rng* pRng;
+    std::unique_ptr<rng> pRng;
 
     ///Number of particles in the system.
     long N;
@@ -76,14 +91,14 @@ private:
     ///The effective sample size at which resampling should be used.
     double dResampleThreshold;
     ///Structure used internally for resampling.
-    double* dRSWeights;
+    std::vector<double> dRSWeights;
     ///Structure used internally for resampling.
-    unsigned int* uRSCount;
+    std::vector<unsigned int> uRSCount;
     ///Structure used internally for resampling.
-    unsigned int* uRSIndices;
+    std::vector<unsigned int> uRSIndices;
 
     ///The particles within the system.
-    particle<Space> *pParticles;
+    std::vector<particle<Space>> pParticles;
     ///The set of moves available.
     moveset<Space> Moves;
 
@@ -96,6 +111,9 @@ private:
     HistoryType htHistoryMode;
     ///The historical process associated with the particle system.
     history<particle<Space> > History;
+#if defined(_OPENMP)
+	std::size_t nThreads;
+#endif
 
 #ifdef SMCTC_HAVE_BGL
     /// A vertex in the particle history graph:
@@ -143,12 +161,22 @@ public:
     void IterateBack(void);
     ///Perform one iteration of the simulation algorithm and return the resulting ess
     double IterateEss(void);
+
+    double IterateEssVariable(DatabaseHistory* database_history=nullptr);
+
     ///Perform iterations until the specified evolution time is reached
     void IterateUntil(long lTerminate);
     ///Move the particle set by proposing an applying an appropriate move to each particle.
     void MoveParticles(void);
     ///Resample the particle set using the specified resmpling scheme.
     void Resample(ResampleType lMode);
+
+    const std::vector<unsigned int> SampleMultinomial(long M) const;
+    const std::vector<unsigned int> SampleSystematic(long M, bool bStratified=false) const;
+    const std::vector<unsigned int> SampleStratified(long M) const;
+
+    ///Resample the particle set using fribblebits resampling.
+    void ResampleFribble(double dEss);
     ///Sets the entire moveset to the one which is supplied
     void SetMoveSet(moveset<Space>& pNewMoveset) { Moves = pNewMoveset; }
     ///Set Resampling Parameters
@@ -163,6 +191,13 @@ public:
 #ifdef SMCTC_HAVE_BGL
     /// Dump the particle graph to an output stream
     std::ostream & StreamParticleGraph(std::ostream & os) const;
+#endif
+
+	/// \brief Set the number of threads
+	/// \param nThreads Number of threads
+#if defined(_OPENMP)
+	void SetNumberOfThreads(const size_t n)
+	{ this->nThreads = n; };
 #endif
 
 private:
@@ -191,23 +226,26 @@ private:
 /// \param htHM The history mode to use: set this to SMC_HISTORY_RAM to store the whole history of the system and SMC_HISTORY_NONE to avoid doing so.
 /// \tparam Space The class used to represent a point in the sample space.
 template <class Space>
-sampler<Space>::sampler(long lSize, HistoryType htHM)
+sampler<Space>::sampler(long lSize, HistoryType htHM) :
+    pRng(new rng()),
+    N(lSize)
 {
-    pRng = new rng();
-    N = lSize;
-    pParticles = new particle<Space>[lSize];
+    pParticles.resize(lSize);
 
     //Allocate some storage for internal workspaces
-    dRSWeights = new double[N];
+    dRSWeights.resize(N);
     ///Structure used internally for resampling.
-    uRSCount  = new unsigned[N];
+    uRSCount.resize(N);
     ///Structure used internally for resampling.
-    uRSIndices = new unsigned[N];
+    uRSIndices.resize(N);
 
     //Some workable defaults.
     htHistoryMode = htHM;
     rtResampleMode = SMC_RESAMPLE_STRATIFIED;
     dResampleThreshold = 0.5 * N;
+#if defined(_OPENMP)
+	nThreads = 1;
+#endif
 }
 
 /// The constructor prepares a sampler for use but does not assign any moves to the moveset, initialise the particles
@@ -220,39 +258,32 @@ sampler<Space>::sampler(long lSize, HistoryType htHM)
 /// \param rngSeed The seed to use for the random number generator
 /// \tparam Space The class used to represent a point in the sample space.
 template <class Space>
-sampler<Space>::sampler(long lSize, HistoryType htHM, const gsl_rng_type* rngType, unsigned long rngSeed)
+sampler<Space>::sampler(long lSize, HistoryType htHM, const gsl_rng_type* rngType, unsigned long rngSeed) :
+    pRng(new rng(rngType, rngSeed)),
+    N(lSize)
 {
-    pRng = new rng(rngType, rngSeed);
-    N = lSize;
-    pParticles = new particle<Space>[lSize];
+    pParticles.resize(lSize);
 
     //Allocate some storage for internal workspaces
-    dRSWeights = new double[N];
+    dRSWeights.resize(N);
     ///Structure used internally for resampling.
-    uRSCount  = new unsigned[N];
+    uRSCount.resize(N);
     ///Structure used internally for resampling.
-    uRSIndices = new unsigned[N];
+    uRSIndices.resize(N);
 
     //Some workable defaults.
     htHistoryMode  = htHM;
     rtResampleMode = SMC_RESAMPLE_STRATIFIED;
     dResampleThreshold = 0.5 * N;
+#if defined(_OPENMP)
+	nThreads = 1;
+#endif
 }
 
 
 template <class Space>
 sampler<Space>::~sampler()
 {
-    delete pRng;
-
-    if(pParticles)
-        delete [] pParticles;
-    if(dRSWeights)
-        delete [] dRSWeights;
-    if(uRSCount)
-        delete [] uRSCount;
-    if(uRSIndices)
-        delete [] uRSIndices;
 }
 
 template <class Space>
@@ -261,10 +292,10 @@ double sampler<Space>::GetESS(void) const
     long double sum = 0;
     long double sumsq = 0;
 
-    for(int i = 0; i < N; i++)
+    for(int i = 0; i < pParticles.size(); i++)
         sum += expl(pParticles[i].GetLogWeight());
 
-    for(int i = 0; i < N; i++)
+    for(int i = 0; i < pParticles.size(); i++)
         sumsq += expl(2.0 * (pParticles[i].GetLogWeight()));
 
     return expl(-log(sumsq) + 2 * log(sum));
@@ -280,12 +311,12 @@ void sampler<Space>::Initialise(void)
     T = 0;
 
     for(int i = 0; i < N; i++)
-        pParticles[i] = Moves.DoInit(pRng);
+        pParticles[i] = Moves.DoInit(pRng.get());
 
     if(htHistoryMode != SMC_HISTORY_NONE) {
         while(History.Pop());
         nResampled = 0;
-        History.Push(N, pParticles, 0, historyflags(nResampled));
+        History.Push(N, pParticles.data(), 0, historyflags(nResampled));
     }
 
     return;
@@ -329,7 +360,7 @@ double sampler<Space>::IntegratePathSampling(double(*pIntegrand)(long, const par
     if(htHistoryMode == SMC_HISTORY_NONE)
         throw SMC_EXCEPTION(SMCX_MISSING_HISTORY, "The path sampling integral cannot be computed as the history of the system was not stored.");
 
-    History.Push(N, pParticles, nAccepted, historyflags(nResampled));
+    History.Push(N, pParticles.data(), nAccepted, historyflags(nResampled));
     double dRes = History.IntegratePathSampling(pIntegrand, pWidth, pAuxiliary);
     History.Pop();
     return dRes;
@@ -360,11 +391,242 @@ void sampler<Space>::IterateBack(void)
 }
 
 template <class Space>
+const std::vector<unsigned int> sampler<Space>::SampleMultinomial(long M) const
+{
+    // Collect the weights of the particles.
+    std::vector<double> dWeights(pParticles.size());
+    for (size_t i = 0; i < pParticles.size(); ++i) {
+        dWeights[i] = pParticles[i].GetWeight();
+    }
+
+    // Generate a vector of sample counts.
+    std::vector<unsigned int> uCount(pParticles.size());
+    pRng->Multinomial(M, pParticles.size(), dWeights.data(), uCount.data());
+
+    // Transform the vector of sample counts into a vector of parent indices.
+    std::vector<unsigned int> uIndices(M);
+    for (size_t i = 0, j = 0; i < uCount.size(); ++i) {
+        while (uCount[i] > 0) {
+            uIndices[j++] = i;
+            --uCount[i];
+        }
+    }
+
+    return uIndices;
+}
+
+template <class Space>
+const std::vector<unsigned int> sampler<Space>::SampleSystematic(long M, bool bStratified) const
+{
+    // Procedure for stratified sampling
+    // See Appendix of Kitagawa 1996, http://www.jstor.org/stable/1390750,
+    // or p.290 of the Doucet et al book, an image of which is at:
+    // http://cl.ly/image/200T0y473k1d/stratified_resampling.jpg
+
+    // Calculate the normalising constant of the weight vector
+    double dWeightSum = 0.0;
+    for (size_t i = 0; i < pParticles.size(); ++i)
+        dWeightSum += exp(pParticles[i].GetLogWeight());
+
+    // dWeightCumulative is \tilde{\pi}^r from the Doucet book.
+    double dWeightCumulative = 0.0;
+    //Generate a uniform random number between 0 and 1/M.
+    double dRand = pRng->Uniform(0, 1.0 / M);
+
+    std::vector<unsigned int> uCount(pParticles.size(), 0);
+
+    for (size_t i = 0, j = 0; i < pParticles.size() && j < M; ++i) {
+        dWeightCumulative += exp(pParticles[i].GetLogWeight()) / dWeightSum;
+        while (dWeightCumulative > ((static_cast<double>(j) / M) + dRand) && j < M) {
+            ++uCount[i];
+            ++j;
+
+            // The only difference between stratified and systematic resampling
+            // is whether a new random variable is drawn for each partition of
+            // the (0, 1] interval.
+            if (bStratified) {
+                dRand = pRng->Uniform(0, 1.0 / M);
+            }
+        }
+    }
+
+    // Transform the vector of sample counts into a vector of parent indices.
+    std::vector<unsigned int> uIndices(M);
+    for (size_t i = 0, j = 0; i < uCount.size(); ++i) {
+        while (uCount[i] > 0) {
+            uIndices[j++] = i;
+            --uCount[i];
+        }
+    }
+
+    return uIndices;
+}
+
+template <class Space>
+const std::vector<unsigned int> sampler<Space>::SampleStratified(long M) const
+{
+    return SampleSystematic(M, true);
+}
+
+template <class Space>
+void sampler<Space>::ResampleFribble(double dESS)
+{
+    assert(pParticles.size() == N);
+
+    //
+    // Generate new samples until ESS reaches the threshold.
+    //
+
+    std::clog << "[ResampleFribble] starting ESS = " << dESS << '\n';
+
+    while (dESS < dResampleThreshold) {
+        //long M = static_cast<long>(std::ceil(dResampleThreshold - dESS));
+        long M = N;
+
+        // Select M parents from the current population.
+        const auto uIndices = SampleStratified(M);
+
+        // Generate M new particles by perturbation of the selected parents.
+        pParticles.reserve(pParticles.size() + M);
+        for (size_t i = 0; i < uIndices.size(); ++i) {
+            const auto& parent = pParticles[uIndices[i]];
+            pParticles.emplace_back(parent.GetValue(), parent.GetLogWeight());
+            Moves.DoMCMC(T + 1, pParticles.back(), pRng.get());
+        }
+
+        dESS = GetESS();
+
+        std::clog << "[ResampleFribble] generated " << M << " new particles\n";
+        std::clog << "[ResampleFribble] new ESS = " << dESS << '\n';
+    }
+
+    //
+    // Resample the population back down to N particles.
+    //
+
+    std::clog << "[ResampleFribble] downsampling from " << pParticles.size() << " to " << N << " particles\n";
+
+    const auto uIndices = SampleStratified(N);
+    decltype(pParticles) pNewParticles;
+    pNewParticles.reserve(N);
+
+    // Replicate the chosen particles.
+    for (size_t i = 0; i < uIndices.size() ; ++i) {
+        const auto& parent = pParticles[uIndices[i]];
+        pNewParticles.emplace_back(parent.GetValue(), 0.0);
+    }
+
+    pParticles = pNewParticles;
+    assert(pParticles.size() == N);
+}
+
+template <class Space>
+double sampler<Space>::IterateEssVariable(DatabaseHistory* database_history)
+{
+    assert(pParticles.size() == N);
+
+    // Append the current population to the history, if requested.
+    if (htHistoryMode != SMC_HISTORY_NONE)
+        History.Push(N, pParticles.data(), nAccepted, historyflags(nResampled));
+
+    // Stash copies of the original particles; we'll need them to generate new ones.
+    const auto pStartingParticles = pParticles;
+    pParticles.clear();
+
+    double dESS = 0.0;
+    double dGlobalMaxWeight = -std::numeric_limits<double>::infinity();
+
+    if (database_history)
+        database_history->clear();
+
+    do {
+        // Generate new particles from the originals via SMC moves.
+        auto pNewParticles = pStartingParticles;
+		#pragma omp parallel for num_threads(nThreads)
+		for(int i = 0; i < N; i++) {
+            Moves.DoMove(T + 1, pNewParticles[i], pRng.get());
+        }
+
+        // Normalize the weights.
+        double dLocalMaxWeight = -std::numeric_limits<double>::infinity();
+        for (const auto& p : pNewParticles)
+            dLocalMaxWeight = std::max(dLocalMaxWeight, p.GetLogWeight());
+
+        //
+        // TODO: Clean up this spaghetti.
+        //
+
+        if (pParticles.empty())
+            dGlobalMaxWeight = dLocalMaxWeight;
+
+        if (dLocalMaxWeight > dGlobalMaxWeight) {
+            for (auto& p : pParticles)
+                p.AddToLogWeight(dGlobalMaxWeight - dLocalMaxWeight);
+            for (auto& p : pNewParticles)
+                p.AddToLogWeight(-dLocalMaxWeight);
+
+            dGlobalMaxWeight = dLocalMaxWeight;
+        } else {
+            for (auto& p : pNewParticles)
+                p.AddToLogWeight(-dGlobalMaxWeight);
+        }
+
+        // Add the newly-generated particles to the population.
+        pParticles.insert(pParticles.end(), pNewParticles.begin(), pNewParticles.end());
+
+        dESS = GetESS();
+        std::clog << "[IterateEssVariable] ESS = " << dESS << ", N = " << pParticles.size() << '\n';
+
+        if (database_history) {
+            database_history->ess.push_back(dESS);
+        }
+    } while (dESS < dResampleThreshold && pParticles.size() < 100000);
+
+    //
+    // Resample the population back down to N particles.
+    //
+
+    if (pParticles.size() > N) {
+        nResampled = 1;
+
+        std::clog << "[IterateEssVariable] downsampling from " << pParticles.size() << " to " << N << " particles\n";
+
+        auto uIndices = SampleStratified(N);
+        decltype(pParticles) pSampledParticles;
+        pSampledParticles.reserve(N);
+
+        // Replicate the chosen particles.
+        for (size_t i = 0; i < uIndices.size() ; ++i) {
+            const auto& parent = pParticles[uIndices[i]];
+            pSampledParticles.emplace_back(parent.GetValue(), 0.0);
+        }
+
+        pParticles = pSampledParticles;
+    }
+
+    //
+    // (Optional) MCMC moves.
+    //
+
+    double nAcceptedLocal = 0;
+	#pragma omp parallel for reduction(+:nAcceptedLocal) num_threads(nThreads)
+	for(int i = 0; i < N; i++) {
+		if(Moves.DoMCMC(T + 1, pParticles[i], pRng.get()))
+            ++nAcceptedLocal;
+    }
+	nAccepted = nAcceptedLocal;
+    ++T;
+
+    assert(pParticles.size() == N);
+    return dESS;
+}
+
+template <class Space>
 double sampler<Space>::IterateEss(void)
 {
     //Initially, the current particle set should be appended to the historical process.
     if(htHistoryMode != SMC_HISTORY_NONE)
-        History.Push(N, pParticles, nAccepted, historyflags(nResampled));
+        History.Push(N, pParticles.data(), nAccepted, historyflags(nResampled));
 
     nAccepted = 0;
 
@@ -384,18 +646,29 @@ double sampler<Space>::IterateEss(void)
     double ESS = GetESS();
     if(ESS < dResampleThreshold) {
         nResampled = 1;
-        Resample(rtResampleMode);
+        if (rtResampleMode == SMC_RESAMPLE_FRIBBLEBITS) {
+            ResampleFribble(ESS);
+        } else {
+            Resample(rtResampleMode);
+        }
     } else {
 #ifdef SMCTC_HAVE_BGL
         UpdateParticleGraph(nullptr);
 #endif
         nResampled = 0;
     }
-    //A possible MCMC step should be included here.
-    for(int i = 0; i < N; i++) {
-        if(Moves.DoMCMC(T + 1, pParticles[i], pRng))
-            nAccepted++;
+
+    if (rtResampleMode != SMC_RESAMPLE_FRIBBLEBITS) {
+		double nAcceptedLocal = nAccepted;
+        //A possible MCMC step should be included here.
+		#pragma omp parallel for reduction(+:nAcceptedLocal) num_threads(nThreads)
+        for(int i = 0; i < N; i++) {
+            if(Moves.DoMCMC(T + 1, pParticles[i], pRng.get()))
+                nAcceptedLocal++;
+        }
+		nAccepted = nAcceptedLocal;
     }
+
     // Increment the evolution time.
     T++;
 
@@ -412,8 +685,9 @@ void sampler<Space>::IterateUntil(long lTerminate)
 template <class Space>
 void sampler<Space>::MoveParticles(void)
 {
+	#pragma omp parallel for num_threads(nThreads)
     for(int i = 0; i < N; i++) {
-        Moves.DoMove(T + 1, pParticles[i], pRng);
+        Moves.DoMove(T + 1, pParticles[i], pRng.get());
         //  pParticles[i].Set(pNew.value, pNew.logweight);
     }
 }
@@ -436,7 +710,7 @@ void sampler<Space>::Resample(ResampleType lMode)
         for(int i = 0; i < N; ++i)
             dRSWeights[i] = pParticles[i].GetWeight();
         //Generate a multinomial random vector with parameters (N,dRSWeights[1:N]) and store it in uRSCount
-        pRng->Multinomial(N, N, dRSWeights, uRSCount);
+        pRng->Multinomial(N, N, dRSWeights.data(), uRSCount.data());
         break;
 
     case SMC_RESAMPLE_RESIDUAL:
@@ -456,7 +730,7 @@ void sampler<Space>::Resample(ResampleType lMode)
             uMultinomialCount -= uRSIndices[i];
         }
         //Generate a multinomial random vector with parameters (uMultinomialCount,dRSWeights[1:N]) and store it in uRSCount
-        pRng->Multinomial(uMultinomialCount, N, dRSWeights, uRSCount);
+        pRng->Multinomial(uMultinomialCount, N, dRSWeights.data(), uRSCount.data());
         for(int i = 0; i < N; ++i)
             uRSCount[i] += uRSIndices[i];
         break;
@@ -539,7 +813,7 @@ void sampler<Space>::Resample(ResampleType lMode)
     }
 
 #ifdef SMCTC_HAVE_BGL
-    UpdateParticleGraph(uRSIndices);
+    UpdateParticleGraph(uRSIndices.data());
 #endif
 
     //Perform the replication of the chosen.
